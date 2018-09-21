@@ -1,0 +1,123 @@
+---
+title: "Influence networks in longitudinal bipartite relational data"
+author: "Frank W. Marrs, Benjamin W. Campbell, Bailey K. Fosdick, Skyler J. Cranmer, and Tobias B&ouml;hmelt"
+date: "`r Sys.Date()`"
+bibliography: bibliography.bib
+output: 
+  rmarkdown::html_vignette:
+    # theme: default
+    latex_engine: pdf_latex
+    # css: flatly.css
+vignette: >
+  %\VignetteIndexEntry{Regression with Network Response}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+
+
+```{r, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+library("blin")
+```
+
+
+# Abstract
+The `blin` package provides methods for estimating "influence networks" from longitudinal bipartite relational data [@blin]. In this type of data, observations exist between disparate actor types, for example forum posts by users (see @zhou2007bipartite for many other examples). However, the size and number of posts by one user to a given forum may influence the the size and number of posts by another user to the same forum. This package focuses on inferring these influences between each pair of users in the data set. In this vignette we analyze a data set of forum posts at UC Irvine over 5 months in 2004 [@opsahl2013triadic]. We infer the influence networks in this data set (among both users and forums) using methods from @campbell2018 and @marrs2018. 
+
+
+# Introduction
+We propose an autoregressive generarive model for longitudinal bipartite relational data. Any bipartite network at time $t$ may be represented by an $S \times L$ matrix $Y_t$, where, for example, $S$ is the number of users and $L$ is the number of forums. In our model, the current observation of the network $Y_t$ depends on the past observations $Y_{-} := \{Y_r \}_{r<t}$ through a function $X_t = f(Y_{-})$ and the matrices $A$ and $B$ representing the influence networks among the first and second actor types, respectively. This model is
+$$
+Y_t = A^T X_t + X_t B + \sum_{i=1}^p Z_t^{(i)} \beta_i + E_t, \label{eq_linmod}
+$$
+where each $Z_t^{(i)}$ is an $S \times L$ matrix of covariates, each $\beta_i$ is an unknown coefficient, and $E_t$ is a matrix of iid normal errors. We term our model the Bipartite Longitudinal Influence Network (BLIN) model. In this vignette, we focus on the case where $X_t = \sum_{r=t-1}^{t-lag} Y_t$. In this setting, the model in \label{eq_linmod} may be written as multiple linear regression with design matrix at time $t$
+$$
+\mathbb{X}_B^{(t)} = [(X_{t}^T \otimes I_S) \ ; \ (I_L \otimes X_{t}) ]. \label{eq_design}
+$$
+Then, the complete design matrix is simply a column-wise stacking of each $\mathbb{X}_B^{(t)}$ for all $t \in \{1,2,\ldots,T \}$.
+
+We note here that the influence networks in the BLIN model are not fully identifiable. For any $c \in \mathbb{R}$, the transformation $\{ A, B\} \rightarrow \{A + c I_S, B - c I_L \}$ gives the same mean for $Y_t$.
+The non-identifability means that we are unable to determine $a_{ii}$ and $b_{jj}$ separately, but that the sum $a_{ii} + b_{jj}$ is identifiable. When reporting results, we break out these sums of diagonals separately into an $S \times L$ matrix of $\{a_{ii} + b_{jj} \}_{i,j}$.
+
+In this vignette, we analyze a data set of forum posts and generate the complete design matrix for the forum data.
+First, however, we briefly describe estimation procedures for the BLIN model. 
+
+### BLIN model estimation
+As the BLIN model in \eqref{eq_linmod} may be written as a linear regression, least-squares estimation is one procedure for estimating the influence networks $A$ and $B$. This procedure is equivalent to the maximum likelihood estimator of \eqref{eq_linmod} under independent and homogeneous errors. To reduce memory demands, we use a block coordinate descent of the least squares criterion,
+$$
+ \{\hat{A}, \hat{B} \} = {\text argmin} \sum_t ||Y_t - A^T X_t - X_t B ||^2,
+$$
+to estimate $A$ and $B$. Block updates for $\beta_i$ are implemented as well when there are covariates in the model. Again, the linear regression setting means that the typical estimates of the standard errors of the entries in $A$ and $B$ are readily available. 
+
+When there are actors that are highly inlfuential, then we might expect reduced-rank structure in the networks $A$ and $B$. We use a block coordinate descent to estimate reduced rank networks $A$ and $B$. We do not provide standard errors for the reduced-rank estimators.
+
+There may be settings where we expect very few influences. In these cases, the matrices $A$ and $B$ are sparse. We use the lasso-penalized regression available from \texttt{cv.glmnet(.)} to estimate entries in $A$ and $B$ [@friedman2010regularization]. We do not provide standard errors for this estimator as post-selection inference is an open research problem.
+
+
+# Forum data analysis
+We first analyze the data set from @opsahl2013triadic consisting of forum posts in a "Facebook-like online community". These posts were made by 899 students to 552 forums over a period of six months in 2004 at the University of California at Irvine. We created a weighted bipartite relational dataset wherein each edge between a user and a forum in a given week consists of the number of characters the user posted to said forum in that particular week. For simplicity of analysis, we took only the 20 most active users and the 20 forums in which they were most active. 
+
+### Frquentist estimation
+We first load the forum data set. We fit a separate intercept for each time period, contained in array $Z$ below.
+
+```{r, fig.show='hold'}
+data("forum")
+Z <- array(0, c(dim(forum), dim(forum)[3]))
+for(i in 1:dim(forum)[3]){  # fit a separate intercept for each week
+  Z[,,i,i] <- 1
+}
+```
+
+
+We first fit the "full" BLIN model, that is the BLIN model without assuming reduced rank or sparse coefficient matrices. We also specify that the fitting should include the computation of standard errors with \texttt{calcses = TRUE}. For now, we fit with a lag of 1, that is the observation of the current bipartite network depends only on the previous observation. By default, the \texttt{summary(.)} method prints only the first ten entries in each estimated coefficient matrix $A$, $B$, and $\beta$. 
+
+```{r, echo=TRUE, fig.show='hold'}
+fit1 <- blin_mle(forum, Z, lag=1, calcses=TRUE)    # full BLIN model 
+summary(fit1)   # summary
+plot(fit1)
+```
+
+
+To demonstrate the remaining frequentist estimation procedures of the BLIN model, we fit the full, reduced rank, and sparse BLIN models to the forum data set. We do so for a range of lags and print out the in-sample $R^2$ values. The results suggest that a lag of $1$ may be sufficient. 
+```{r, echo=TRUE, fig.show='hold'}
+lags <- 1:2
+R2 <- matrix(0, length(lags), 3)  ;  colnames(R2) <- c("full", "reduced_rank", "sparse")
+for(i in 1:length(lags)){
+  fit <- blin_mle(forum, Z, lag=lags[i])
+  R2[i,1] <- fit$R2
+  fit <- blin_mle(forum, Z, lag=lags[i], rankA=5, rankB=5, type="reduced_rank")
+  R2[i,2] <- fit$R2
+  fit <- blin_mle(forum, Z, lag=lags[i], type="sparse")
+  R2[i,3] <- fit$R2
+}
+print(R2)
+```
+
+### Other link functions
+The residual plots following the least-squares estimates of the BLIN model do not appear normally distributed. It may be appropriate to cast the BLIN model as a generalized linear model with an appropriate link. We provide a function to build the design matrix based on \eqref{eq_design}. This design matrix may be large, as it is of dimension $SLT \times (S^2 + L^2 + p)$. We leave further investigation of this data set to the reader.
+```{r, echo=TRUE, fig.show='hold'}
+Xreg <- build_design(forum, X=Z, lag=1)   # design matrix for lag=1
+dim(Xreg)
+```
+
+
+
+# References
+
+
+
+<!-- # Network plots -->
+<!-- We plot the 40 largest entries in the user network. -->
+<!-- ```{r, echo=TRUE, fig.show='hold'} -->
+<!-- set.seed(1) -->
+
+<!-- users <- sapply(rownames(forum), function(z) strsplit(z, "_")[[1]][1]) -->
+<!-- Aplot <- fit1$A -->
+<!-- diag(Aplot) <- NA -->
+<!-- threshold <- sort(c(Aplot), decreasing=TRUE, na.last=TRUE)[40] -->
+<!-- library(igraph) -->
+<!-- i1 <- which(Aplot > threshold, arr.ind=TRUE) -->
+<!-- Anet <- cbind(users[i1[,1]], users[i1[,2]], Aplot[i1]) -->
+<!-- net <- graph.data.frame(d=Anet, directed = TRUE, vertices=NULL) -->
+<!-- plot(net, edge.arrow.size=.4, vertex.color="#FC8D62", vertex.size=20) -->
+<!-- ``` -->
